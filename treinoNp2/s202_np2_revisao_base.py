@@ -9,7 +9,7 @@ import redis
 from s202_np2_revisao_models import Aluno, Curso, Matricula
 
 class CassandraDBConnector:
-        
+    
     nodes = ['localhost']
     port = 9042   
 
@@ -26,10 +26,10 @@ class CassandraDBConnector:
             )
             CassandraDBConnector.session = cluster.connect()
             CassandraDBConnector.session.row_factory = dict_factory
-            CassandraDBConnector.session.execute(""" CREATE KEYSPACE IF NOT EXISTS {} WITH replication = {{ 'class': 'SimpleStrategy', 'replication_factor': '1' }} """.format(CassandraDBConnector.key_space))  # TODO comment this when using cloud provider
+            CassandraDBConnector.session.execute(""" CREATE KEYSPACE IF NOT EXISTS {} WITH replication = {{ 'class': 'SimpleStrategy', 'replication_factor': '1' }} """.format(CassandraDBConnector.key_space)) 
             CassandraDBConnector.session.set_keyspace(CassandraDBConnector.key_space)
 
-            #CassandraDBConnector.clean_database() 
+            CassandraDBConnector.clean_database()
 
         return CassandraDBConnector.session
     
@@ -54,7 +54,7 @@ class CassandraDBConnector:
 
 class RedisDBConnector:
 
-    redis_host = "localhost" 
+    redis_host = "localhost"
     redis_port = 6379
 
     connection = None
@@ -82,8 +82,8 @@ class AlunoDAO:
     
     def criar_tabela(self):
         #---------------------------------------------------------------------Questão 1 a.
-        query_create = ("""                         
-            CREATE TABLE IF NOT EXISTS Aluno(
+        query = """
+            CREATE TABLE IF NOT EXISTS Aluno (
                 id INT,
                 pais TEXT,
                 cidade TEXT,
@@ -91,100 +91,89 @@ class AlunoDAO:
                 nome TEXT,
                 email TEXT,
                 areas_estudo LIST<TEXT>,
-                PRIMARY KEY((pais, cidade), id)                            
+                PRIMARY KEY((pais, cidade), id)
             );
-            """)
-        
-        self.cassandra_session.execute(query=query_create)
+        """
+        self.cassandra_session.execute(query)
 
         query_index = "CREATE INDEX IF NOT EXISTS aluno_pais_idx ON Aluno (pais);"
-        self.cassandra_session.execute(query_index) # índice para evitar ALLOW FILTERING
-        pass
+        self.cassandra_session.execute(query_index)
 
     def adicionar(self, aluno : Aluno):
         #---------------------------------------------------------------------Questão 1 a.
-        query_insert = ("""
-            INSERT INTO Aluno (id, pais, cidade, endereco, nome, email, areas_estudo) 
-                VALUES (%(id)s, %(pais)s, %(cidade)s, %(endereco)s, %(nome)s, %(email)s, %(areas_estudo)s);                      
-        """)
+        query = """
+            INSERT INTO Aluno (id, pais, cidade, endereco, nome, email, areas_estudo)
+            VALUES (%(id)s, %(pais)s, %(cidade)s, %(endereco)s, %(nome)s, %(email)s, %(areas_estudo)s);
+        """
 
-        self.cassandra_session.execute(query_insert, aluno.to_dict())
-        pass
+        self.cassandra_session.execute(query, aluno.to_dict())
 
     def get_quantidade_alunos(self):
         #---------------------------------------------------------------------Questão 1 a.
-        query_select = ("""
-            SELECT COUNT(*) AS quantidade FROM Aluno ALLOW FILTERING;
-        """)
-
-        resultado = self.cassandra_session.execute(query_select)
-        return resultado.one()['quantidade']
+        query = "SELECT COUNT(*) AS qnt FROM Aluno;"
+        result = self.cassandra_session.execute(query)
+        return result.one()['qnt']
 
     def get_alunos_pais(self, pais : str):
         #---------------------------------------------------------------------Questão 2
-        query_select = ("""
-            SELECT * FROM Aluno WHERE pais = %s;
-        """)
+        query = """
+            SELECT * FROM Aluno WHERE pais = %(pais)s;
+        """
 
-        rows = self.cassandra_session.execute(query_select, [pais])
-
-        return [Aluno(
-            id=row['id'],
-            pais=row['pais'],
-            cidade = row['cidade'],
-            endereco=row['endereco'],
-            nome=row['nome'],
-            email=row['email'],
-            areas_estudo=list(row['areas_estudo'])
-        ) for row in rows]
+        rows = self.cassandra_session.execute(query, {'pais': pais})
+        return [
+            Aluno(
+            id=r['id'],
+            pais=r['pais'],
+            cidade=r['cidade'],
+            endereco=r['endereco'],
+            nome=r['nome'],
+            email=r['email'],
+            areas_estudo=r['areas_estudo']
+            ) for r in rows
+        ]
 
     def adicionar_cache(self, aluno : Aluno):
         #---------------------------------------------------------------------Questão 2
-        # Adicionar no Redis
-
-        dados = aluno.to_dict()
-        dados['areas_estudo'] = ",".join(dados['areas_estudo'])
+        dados = aluno.to_dict() # Erro pois redis não aceita listas
+        dados["areas_estudo"] = ",".join(dados["areas_estudo"]) # transforma a lista em string separada por vírgula para armazenar no Redis
         self.redis_connection.hset(f"aluno:{aluno.id}", mapping=dados)
-
+    
     def get_cache(self):
         #---------------------------------------------------------------------Questão 2
-        keys = self.redis_connection.keys("aluno:*")
-        alunos = []
-
-        for key in keys:
-            d = self.redis_connection.hgetall(key)
-            if d:
-                areas = d['areas_estudo'].split(',')
-                alunos.append(Aluno(
-                    id=(d['id']), pais=d['pais'], cidade=d['cidade'],
-                    endereco=d['endereco'], nome=d['nome'], email=d['email'],
-                    areas_estudo=areas
-                ))
-
-        return alunos
+        # Usando hgetall e keys para obter os dados dos alunos armazenados no Redis
+        # Cada aluno é armazenado com uma chave no formato "aluno:{id}", onde {id} é o ID do aluno
+        keys = self.redis_connection.keys("aluno:*") # Pega todas as chaves que começam com "aluno:"
+        
+        return [Aluno(
+            id=self.redis_connection.hget(key, "id"),
+            pais=self.redis_connection.hget(key, "pais"),
+            cidade=self.redis_connection.hget(key, "cidade"),
+            endereco=self.redis_connection.hget(key, "endereco"),
+            nome=self.redis_connection.hget(key, "nome"),
+            email=self.redis_connection.hget(key, "email"),
+            areas_estudo=self.redis_connection.hget(key, "areas_estudo").split(",") # Converte a string de volta para lista
+        ) for key in keys if ":desejo:" not in key] # Filtra para pegar apenas as chaves dos alunos, ignorando as chaves de lista de desejos
+        # Usando hgetall:
+        return [Aluno(**self.redis_connection.hgetall(key)) for key in keys if ":desejo:" not in key] # Filtra para pegar apenas as chaves dos alunos, ignorando as chaves de lista de desejos
 
     def get_areas_estudo_cache(self, aluno_id : int):
         #---------------------------------------------------------------------Questão 3
-        d = self.redis_connection.hgetall(f"aluno:{aluno_id}")
-        return d['areas_estudo'].split(',')
-    
+        data = self.redis_connection.hgetall(f"aluno:{aluno_id}")
+        return data["areas_estudo"].split(",")
+        
 
     def adicionar_lista_desejos_cache(self, aluno_id : int, lista_desejos : list):
         #---------------------------------------------------------------------Questão 4
         for curso in lista_desejos:
-            curso_id = curso['id']
-            chave_do_curso = f'aluno:{aluno_id}:desejo:{curso_id}'
-            self.redis_connection.hset(chave_do_curso, mapping=curso)
+            chave = f"aluno:{aluno_id}:desejo:{curso['id']}"
+            self.redis_connection.hset(chave, mapping=curso)
 
     def get_lista_desejos_cache(self, aluno_id : int):
         #---------------------------------------------------------------------Questão 4
         chaves = self.redis_connection.keys(f"aluno:{aluno_id}:desejo:*")
-        lista_desejos = []
-        for chave in chaves:
-            curso_dados = self.redis_connection.hgetall(chave)
-            if curso_dados:
-                lista_desejos.append(curso_dados)
-        return lista_desejos
+        
+        return [self.redis_connection.hgetall(chave) for chave in chaves]
 
 class CursoDAO:
     def __init__(self):
@@ -192,7 +181,7 @@ class CursoDAO:
 
     def criar_tabela(self):
         #---------------------------------------------------------------------Questão 1 b.
-        query_create = ("""
+        query = """
             CREATE TABLE IF NOT EXISTS Curso (
                 id INT,
                 categoria TEXT,
@@ -200,46 +189,45 @@ class CursoDAO:
                 custo_producao FLOAT,
                 preco FLOAT,
                 duracao_horas INT,
-                PRIMARY KEY((categoria),id)                        
-            );                               
-        """)
-        self.cassandra_session.execute(query_create)
-        pass
+                PRIMARY KEY((categoria),id)
+            )
+        """
+        self.cassandra_session.execute(query)
 
     def adicionar(self, curso : Curso):
         #---------------------------------------------------------------------Questão 1 b.
-        query_insert = ("""
+        query = """
             INSERT INTO Curso (id, categoria, nome, custo_producao, preco, duracao_horas)
-                VALUES (%(id)s, %(categoria)s, %(nome)s,
-                %(custo_producao)s, %(preco)s, %(duracao_horas)s);                
-        """)
-        self.cassandra_session.execute(query_insert, curso.to_dict())
-        pass
+            VALUES (%(id)s, %(categoria)s, %(nome)s, %(custo_producao)s, %(preco)s, %(duracao_horas)s);
+        """
+
+        self.cassandra_session.execute(query, curso.to_dict())
 
     def get_custo_total(self):
         #---------------------------------------------------------------------Questão 1 b.
-        query_select = ("""
-            SELECT SUM(custo_producao) AS custo_total FROM Curso;                       
-        """)
-        resultado = self.cassandra_session.execute(query_select)
-        return  resultado.one()['custo_total']
+        query = """
+            SELECT SUM(custo_producao) AS total FROM Curso ALLOW FILTERING;
+        """
+
+        result = self.cassandra_session.execute(query)
+        return result.one()['total']
 
     def get_cursos_categoria(self, categoria):
         #---------------------------------------------------------------------Questão 3
-        query_select = """
-            SELECT * FROM Curso WHERE categoria = %s ALLOW FILTERING
+        query = """
+            SELECT * FROM Curso WHERE categoria = %(categoria)s;
         """
-
-        rows = self.cassandra_session.execute(query_select, [categoria])
-
-        return [Curso(
-            id=row['id'],
-            categoria=row['categoria'],
-            nome=row['nome'],
-            custo_producao=row['custo_producao'],
-            preco=round(float(row['preco']), 2),
-            duracao_horas=row['duracao_horas']
-        ) for row in rows]
+        result = self.cassandra_session.execute(query, {'categoria': categoria})
+        return [
+            Curso(
+                id=row['id'],
+                categoria=row['categoria'],
+                nome=row['nome'],
+                custo_producao=row['custo_producao'],
+                preco=round(row['preco'],2),
+                duracao_horas=row['duracao_horas']
+            ) for row in result
+        ]
 
 class MatriculaDAO:
     def __init__(self):
@@ -247,62 +235,55 @@ class MatriculaDAO:
 
     def criar_tabela(self):
         #---------------------------------------------------------------------Questão 5
-        query_create = ("""
+        query = """
             CREATE TABLE IF NOT EXISTS Matricula (
                 id INT,
-                dia int,
+                dia INT,
                 mes INT,
                 ano INT,
                 hora TEXT,
                 valor_total FLOAT,
                 cursos_quantidade LIST<FROZEN<MAP<INT,INT>>>,
                 aluno_id INT,
-                PRIMARY KEY((dia,mes,ano), hora, id)
+                PRIMARY KEY ((dia, mes, ano), hora, id)
             );
+        """
 
-        """)
-        self.cassandra_session.execute(query_create)
-        pass
+        self.cassandra_session.execute(query)
 
     def adicionar(self, id: str, data_hora : datetime, aluno_id: int, lista_desejos : list):
         #---------------------------------------------------------------------Questão 5
-        valor_total = sum(float(curso['preco']) for curso in lista_desejos)
-        cursos_quantidade = [{int(curso['id']):1} for curso in lista_desejos]
-        
-        query_insert = """
-            INSERT INTO Matricula (id, dia, mes, ano, hora, valor_total,
-                cursos_quantidade, aluno_id) VALUES (%(id)s, %(dia)s, %(mes)s, %(ano)s,
-                    %(hora)s, %(valor_total)s, %(cursos_quantidade)s,
-                        %(aluno_id)s);
+        query = """
+            INSERT INTO Matricula (id, dia, mes, ano, hora, valor_total, cursos_quantidade, aluno_id)
+            VALUES (%(id)s, %(dia)s, %(mes)s, %(ano)s, %(hora)s, %(valor_total)s, %(cursos_quantidade)s, %(aluno_id)s);
         """
-        self.cassandra_session.execute(query_insert, {
+
+        valor_total = sum(float(curso['preco']) for curso in lista_desejos)
+        cursos_quantidade = [{int(curso['id']): 1} for curso in lista_desejos]
+
+        self.cassandra_session.execute(query, {
             'id': id,
             'dia': data_hora.day,
             'mes': data_hora.month,
             'ano': data_hora.year,
-            'hora': data_hora.strftime("%H:%M"),
+            'hora': str(data_hora.hour) + ":" + str(data_hora.minute),
             'valor_total': valor_total,
             'cursos_quantidade': cursos_quantidade,
             'aluno_id': aluno_id
-        } )
+        })
 
     def get_matriculas(self, data_hora : datetime):
         #---------------------------------------------------------------------Questão 5
-        query_select = """
-            SELECT * FROM Matricula WHERE ano = %(ano)s AND mes = %(mes)s AND dia = %(dia)s;
-
+        query = """
+            SELECT aluno_id, hora, valor_total FROM Matricula
+            WHERE dia = %(dia)s AND mes = %(mes)s AND ano = %(ano)s;
         """
-
-        rows = self.cassandra_session.execute(query_select, {'ano': data_hora.year, 'mes': data_hora.month, 'dia': data_hora.day})
-
-        return [{
-            'aluno_id': row['aluno_id'],
-            'hora': row['hora'],
-            'valor': round(float(row['valor_total']), 2)
-        } for row in rows]
-        
-
-
+        result = self.cassandra_session.execute(query, {
+            'dia': data_hora.day,
+            'mes': data_hora.month,
+            'ano': data_hora.year
+        })
+        return [{'aluno_id': row['aluno_id'], 'hora': row['hora'], 'valor': round(row['valor_total'],2)} for row in result]
 
 aluno_dao = AlunoDAO()
 curso_dao = CursoDAO()
@@ -393,7 +374,7 @@ def test_questao_3():
 
     output = [
         {"id":2, "nome":"UI/UX Design", "preco": 199.90},
-        #{"id":5, "nome":"JavaScript Moderno", "preco": 229.90}, Quebra
+        #{"id":5, "nome":"JavaScript Moderno", "preco": 229.90},
         {"id":6, "nome":"Figma para Iniciantes", "preco": 149.90}
     ]
 
